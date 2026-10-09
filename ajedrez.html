@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ajedrez P2P & IA Optimizado</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- jQuery y Chessboard.js -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <!-- Chess.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <!-- PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+
+    <style>
+        body { background-color: #1a202c; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        .highlight-white { box-shadow: inset 0 0 3px 3px yellow; }
+        .highlight-black { box-shadow: inset 0 0 3px 3px yellow; }
+        .highlight-move { box-shadow: inset 0 0 3px 3px rgba(0, 255, 0, 0.7); }
+
+        .piezas-capturadas { display: flex; align-items: center; gap: 4px; min-height: 24px; font-size: 1.2rem; }
+        .ventaja-puntos { font-weight: bold; color: #4ade80; font-size: 0.9rem; margin-left: 8px; }
+
+        #toast {
+            visibility: hidden; min-width: 250px; background-color: #333; color: #fff; text-align: center;
+            border-radius: 4px; padding: 16px; position: fixed; z-index: 1000; left: 50%; bottom: 30px;
+            transform: translateX(-50%); opacity: 0; transition: opacity 0.5s, bottom 0.5s;
+        }
+        #toast.show { visibility: visible; opacity: 1; bottom: 50px; }
+
+        .oculto { display: none !important; }
+    </style>
+</head>
+<body class="h-screen flex items-center justify-center">
+
+    <!-- MENÚ PRINCIPAL -->
+    <div id="menu-principal" class="bg-gray-800 p-8 rounded-lg shadow-2xl text-center w-full max-w-md">
+        <h1 class="text-4xl font-bold mb-6 text-blue-400">♟️ Ajedrez Web</h1>
+        
+        <div class="space-y-4">
+            <div class="bg-gray-700 p-4 rounded">
+                <h2 class="text-xl font-semibold mb-2">Jugar contra la Computadora</h2>
+                <select id="select-dificultad" class="w-full mb-2 p-2 bg-gray-600 text-white rounded outline-none border-none">
+                    <option value="1">Dificultad Fácil (Nivel 1)</option>
+                    <option value="5">Dificultad Media (Nivel 5)</option>
+                    <option value="10">Dificultad Difícil (Nivel 10)</option>
+                    <option value="20">Gran Maestro (Nivel 20)</option>
+                </select>
+                <button id="btn-ia" class="w-full bg-blue-600 hover:bg-blue-500 p-2 rounded font-bold transition">Empezar vs IA</button>
+            </div>
+
+            <div class="bg-gray-700 p-4 rounded">
+                <h2 class="text-xl font-semibold mb-2">Jugar con un Amigo (P2P)</h2>
+                <button id="btn-crear-sala" class="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-bold transition mb-2">Generar Enlace de Invitación</button>
+                <div id="link-container" class="oculto bg-gray-900 p-2 rounded text-sm break-all flex flex-col gap-2 mt-2">
+                    <span id="link-text" class="text-gray-300"></span>
+                    <button id="btn-copiar" class="bg-blue-500 hover:bg-blue-400 p-1 rounded text-xs font-bold transition">Copiar Link y Entrar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PANTALLA DE JUEGO -->
+    <div id="contenedor-juego" class="oculto flex flex-col items-center w-full max-w-3xl px-4">
+        
+        <div class="w-full max-w-[500px] bg-gray-800 p-2 rounded-t-lg flex justify-between items-center mt-4 border-b border-gray-700">
+            <span id="nombre-rival" class="font-bold text-gray-200">Rival</span>
+            <div id="material-rival" class="piezas-capturadas text-white"></div>
+        </div>
+
+        <div id="miTablero" class="w-full max-w-[500px] shadow-2xl"></div>
+
+        <div class="w-full max-w-[500px] bg-gray-800 p-2 rounded-b-lg flex justify-between items-center mb-4 border-t border-gray-700">
+            <span id="nombre-mio" class="font-bold text-blue-400">Tú</span>
+            <div id="material-mio" class="piezas-capturadas text-white"></div>
+        </div>
+
+        <div class="flex gap-4 w-full max-w-[500px] mb-8">
+            <button id="btn-salir" class="flex-1 bg-gray-600 hover:bg-gray-500 p-2 rounded font-bold transition">Salir</button>
+            <button id="btn-tablas" class="flex-1 bg-yellow-600 hover:bg-yellow-500 p-2 rounded font-bold transition text-black">Pedir Tablas</button>
+            <button id="btn-rendirse" class="flex-1 bg-red-600 hover:bg-red-500 p-2 rounded font-bold transition">Rendirse</button>
+        </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // --- GESTIÓN DE AUDIO ---
+            let audioCtx = null;
+
+            function initAudio() {
+                try {
+                    if (!audioCtx) {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        if (AudioContext) {
+                            audioCtx = new AudioContext();
+                        }
+                    }
+                    if (audioCtx && audioCtx.state === 'suspended') {
+                        audioCtx.resume();
+                    }
+                } catch (err) {
+                    console.warn("Audio no soportado:", err);
+                }
+            }
+
+            function playSound(type) {
+                if (!audioCtx || audioCtx.state !== 'running') {
+                    return;
+                }
+                try {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+
+                    if (type === 'move') {
+                        osc.type = 'sine';
+                        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+                        osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.1);
+                        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                        osc.start();
+                        osc.stop(audioCtx.currentTime + 0.1);
+                    } else if (type === 'capture') {
+                        osc.type = 'triangle';
+                        osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+                        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+                        osc.start();
+                        osc.stop(audioCtx.currentTime + 0.15);
+                    } else if (type === 'check') {
+                        osc.type = 'square';
+                        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+                        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+                        osc.start();
+                        osc.stop(audioCtx.currentTime + 0.3);
+                    } else if (type === 'end') {
+                        osc.type = 'sawtooth';
+                        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+                        osc.frequency.linearRampToValueAtTime(50, audioCtx.currentTime + 0.5);
+                        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                        gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                        osc.start();
+                        osc.stop(audioCtx.currentTime + 0.5);
+                    }
+                } catch (err) {
+                    console.warn("Error al reproducir sonido:", err);
+                }
+            }
+
+            // --- VARIABLES GLOBALES ---
+            let board = null;
+            let game = new Chess();
+            let peer = null;
+            let conn = null;
+            let modoJuego = null;
+            let miColor = 'w';
+            let stockfish = null;
+
+            // --- INTERFAZ ---
+            function mostrarToast(msg) {
+                const toast = document.getElementById('toast');
+                toast.textContent = msg;
+                toast.classList.add("show");
+                setTimeout(function() {
+                    toast.classList.remove("show");
+                }, 3000);
+            }
+
+            function cambiarPantalla(idMostrar) {
+                document.getElementById('menu-principal').classList.add('oculto');
+                document.getElementById('contenedor-juego').classList.add('oculto');
+                document.getElementById(idMostrar).classList.remove('oculto');
+            }
+
+            function clearHighLights() {
+                $('#miTablero .square-55d63').removeClass('highlight-white highlight-black highlight-move');
+            }
+
+            function highlightMove(origen, destino) {
+                clearHighLights();
+                $('#miTablero .square-' + origen).addClass('highlight-move');
+                $('#miTablero .square-' + destino).addClass('highlight-move');
+            }
+
+            // --- CÁLCULO DE MATERIAL ---
+            const pieceValues = { 'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9, 'k': 0 };
+            const pieceSymbols = {
+                'w': { 'p':'♙', 'n':'♘', 'b':'♗', 'r':'♖', 'q':'♕' },
+                'b': { 'p':'♟', 'n':'♞', 'b':'♝', 'r':'♜', 'q':'♛' }
+            };
+
+            function actualizarMaterial() {
+                const fen = game.fen().split(' ')[0];
+                let wPieces = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+                let bPieces = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+
+                for (let i = 0; i < fen.length; i++) {
+                    let char = fen[i];
+                    if (/[a-zA-Z]/.test(char)) {
+                        if (char === char.toUpperCase()) {
+                            let p = char.toLowerCase();
+                            if (wPieces[p] !== undefined) {
+                                wPieces[p]--;
+                            }
+                        } else {
+                            if (bPieces[char] !== undefined) {
+                                bPieces[char]--;
+                            }
+                        }
+                    }
+                }
+
+                let wStr = '';
+                let bStr = '';
+                let wPoints = 0;
+                let bPoints = 0;
+
+                for (let p in wPieces) {
+                    for (let k = 0; k < wPieces[p]; k++) {
+                        wStr += pieceSymbols['b'][p];
+                        bPoints += pieceValues[p];
+                    }
+                    for (let k = 0; k < bPieces[p]; k++) {
+                        bStr += pieceSymbols['w'][p];
+                        wPoints += pieceValues[p];
+                    }
+                }
+
+                let wAdv = wPoints - bPoints;
+                let bAdv = bPoints - wPoints;
+
+                const elMio = document.getElementById('material-mio');
+                const elRival = document.getElementById('material-rival');
+
+                let myStr = miColor === 'w' ? bStr : wStr;
+                let myAdv = miColor === 'w' ? wAdv : bAdv;
+                let rivStr = miColor === 'w' ? wStr : bStr;
+                let rivAdv = miColor === 'w' ? bAdv : wAdv;
+
+                elMio.innerHTML = myStr + (myAdv > 0 ? `<span class="ventaja-puntos">+${myAdv}</span>` : '');
+                elRival.innerHTML = rivStr + (rivAdv > 0 ? `<span class="ventaja-puntos">+${rivAdv}</span>` : '');
+            }
+
+            // --- LÓGICA DE MOVIMIENTOS ---
+            function onDragStart(source, piece, position, orientation) {
+                if (game.game_over()) {
+                    return false;
+                }
+                if (modoJuego === 'p2p' && game.turn() !== miColor) {
+                    return false;
+                }
+                if ((miColor === 'w' && piece.search(/^b/) !== -1) || 
+                    (miColor === 'b' && piece.search(/^w/) !== -1)) {
+                    return false;
+                }
+            }
+
+            function onDrop(source, target) {
+                let move = game.move({ from: source, to: target, promotion: 'q' });
+                if (move === null) {
+                    return 'snapback';
+                }
+
+                highlightMove(source, target);
+                if (move.captured) {
+                    playSound('capture');
+                } else {
+                    playSound('move');
+                }
+
+                if (game.in_check()) {
+                    playSound('check');
+                }
+
+                actualizarMaterial();
+                comprobarFinJuego();
+
+                if (modoJuego === 'ia' && !game.game_over()) {
+                    window.setTimeout(hacerMovimientoIA, 250);
+                } else if (modoJuego === 'p2p' && conn) {
+                    conn.send({ type: 'move', move: move });
+                }
+            }
+
+            function onSnapEnd() {
+                board.position(game.fen());
+            }
+
+            function comprobarFinJuego() {
+                if (game.game_over()) {
+                    playSound('end');
+                    if (game.in_checkmate()) {
+                        mostrarToast("¡Jaque Mate! Fin del juego.");
+                    } else if (game.in_draw()) {
+                        mostrarToast("Partida terminada en Tablas.");
+                    } else if (game.in_stalemate()) {
+                        mostrarToast("Rey Ahogado.");
+                    }
+                }
+            }
+
+            // --- INTELIGENCIA ARTIFICIAL ---
+            function hacerMovimientoIA() {
+                if (!stockfish) {
+                    return;
+                }
+                let diff = document.getElementById('select-dificultad').value;
+                stockfish.postMessage("position fen " + game.fen());
+                stockfish.postMessage("go depth " + diff);
+            }
+
+            // --- INTELIGENCIA ARTIFICIAL ---
+            function hacerMovimientoIA() {
+                if (!stockfish) {
+                    return;
+                }
+                let diff = document.getElementById('select-dificultad').value;
+                stockfish.postMessage("position fen " + game.fen());
+                stockfish.postMessage("go depth " + diff);
+            }
+
+            function iniciarStockfish() {
+                if (typeof Worker !== 'undefined') {
+                    // Truco para saltarse el bloqueo CORS de Web Workers cargando desde CDN
+                    fetch('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.0/stockfish.js')
+                        .then(function(response) {
+                            return response.text();
+                        })
+                        .then(function(text) {
+                            const blob = new Blob([text], { type: 'application/javascript' });
+                            const workerUrl = URL.createObjectURL(blob);
+                            stockfish = new Worker(workerUrl);
+                            
+                            stockfish.postMessage("uci");
+                            
+                            stockfish.onmessage = function(event) {
+                                let match = event.data.match(/^bestmove ([a-h][1-8])([a-h][1-8])([qrbn])?/);
+                                if (match) {
+                                    let move = game.move({ from: match[1], to: match[2], promotion: match[3] || 'q' });
+                                    if (move) {
+                                        board.position(game.fen());
+                                        highlightMove(move.from, move.to);
+                                        if (move.captured) {
+                                            playSound('capture');
+                                        } else {
+                                            playSound('move');
+                                        }
+                                        if (game.in_check()) {
+                                            playSound('check');
+                                        }
+                                        actualizarMaterial();
+                                        comprobarFinJuego();
+                                    }
+                                }
+                            };
+                        })
+                        .catch(function(err) {
+                            mostrarToast("Error al cargar la IA. Revisa tu conexión a Internet.");
+                            console.error(err);
+                        });
+                } else {
+                    mostrarToast("Tu navegador no soporta IA en segundo plano.");
+                }
+            }
+
+            // --- MULTIJUGADOR P2P ---
+            function configurarP2P(esHost) {
+                try {
+                    peer = new Peer();
+                    peer.on('open', function(id) {
+                        if (esHost) {
+                            const enlace = window.location.href.split('?')[0] + "?peer=" + id;
+                            document.getElementById('link-text').textContent = enlace;
+                            document.getElementById('link-container').classList.remove('oculto');
+                        }
+                    });
+
+                    peer.on('connection', function(connection) {
+                        conn = connection;
+                        iniciarConexion();
+                    });
+
+                    peer.on('error', function(err) {
+                        mostrarToast("Error P2P: " + err.type);
+                    });
+                } catch (err) {
+                    mostrarToast("Error al conectar al servidor de emparejamiento.");
+                }
+            }
+
+            function unirASala(idSala) {
+                try {
+                    peer = new Peer();
+                    peer.on('open', function() {
+                        conn = peer.connect(idSala);
+                        conn.on('open', function() {
+                            iniciarConexion();
+                            iniciarPartidaLocal('b', 'Anfitrión (Blancas)'); 
+                        });
+                    });
+                } catch (err) {
+                    mostrarToast("Error uniéndose a la sala.");
+                }
+            }
+
+            function iniciarConexion() {
+                conn.on('data', function(data) {
+                    if (data.type === 'move') {
+                        game.move(data.move);
+                        board.position(game.fen());
+                        highlightMove(data.move.from, data.move.to);
+                        if (data.move.captured) {
+                            playSound('capture');
+                        } else {
+                            playSound('move');
+                        }
+                        if (game.in_check()) {
+                            playSound('check');
+                        }
+                        actualizarMaterial();
+                        comprobarFinJuego();
+                    } else if (data.type === 'rendirse') {
+                        mostrarToast("El rival se ha rendido. ¡Ganas la partida!");
+                        playSound('end');
+                    } else if (data.type === 'tablas') {
+                        if (confirm("El rival ofrece Tablas. ¿Aceptas?")) {
+                            conn.send({ type: 'tablas_aceptadas' });
+                            mostrarToast("Partida terminada en Tablas por mutuo acuerdo.");
+                        }
+                    } else if (data.type === 'tablas_aceptadas') {
+                        mostrarToast("El rival aceptó las Tablas.");
+                    }
+                });
+
+                conn.on('close', function() {
+                    mostrarToast("El rival ha salido de la partida.");
+                });
+            }
+
+            // --- INICIALIZADOR DEL TABLERO ---
+            function iniciarPartidaLocal(color, nombreRivalText) {
+                initAudio();
+                modoJuego = nombreRivalText.includes('IA') ? 'ia' : 'p2p';
+                miColor = color;
+                game.reset(); 
+                
+                document.getElementById('nombre-rival').textContent = nombreRivalText;
+                document.getElementById('material-mio').innerHTML = '';
+                document.getElementById('material-rival').innerHTML = '';
+                clearHighLights();
+                
+                cambiarPantalla('contenedor-juego');
+
+                const config = {
+                    draggable: true,
+                    position: 'start',
+                    orientation: miColor === 'w' ? 'white' : 'black',
+                    onDragStart: onDragStart,
+                    onDrop: onDrop,
+                    onSnapEnd: onSnapEnd,
+                    pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+                };
+
+                setTimeout(function() {
+                    if (board !== null) {
+                        board.destroy();
+                    }
+                    board = Chessboard('miTablero', config);
+                    $(window).resize(function() {
+                        if (board) {
+                            board.resize();
+                        }
+                    });
+                }, 100);
+
+                if (modoJuego === 'ia') {
+                    iniciarStockfish();
+                }
+            }
+
+            // --- EVENTOS DE BOTONES ---
+            document.getElementById('btn-ia').addEventListener('click', function() {
+                iniciarPartidaLocal('w', 'Computadora (IA)');
+            });
+
+            document.getElementById('btn-crear-sala').addEventListener('click', function() {
+                document.getElementById('btn-crear-sala').textContent = "Generando Enlace...";
+                document.getElementById('btn-crear-sala').disabled = true;
+                configurarP2P(true);
+            });
+
+            document.getElementById('btn-copiar').addEventListener('click', function() {
+                const enlace = document.getElementById('link-text').textContent;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(enlace).catch(function(err) {
+                        console.warn("No se pudo copiar automáticamente:", err);
+                    });
+                }
+                mostrarToast("¡Copiado! Envíalo a tu amigo.");
+                iniciarPartidaLocal('w', 'Amigo (Negras)'); 
+            });
+
+            document.getElementById('btn-salir').addEventListener('click', function() {
+                if (confirm("¿Estás seguro de que deseas salir al menú principal?")) {
+                    if (conn) {
+                        conn.close();
+                        conn = null;
+                    }
+                    if (peer) {
+                        peer.destroy();
+                        peer = null;
+                    }
+                    if (stockfish) {
+                        stockfish.terminate();
+                        stockfish = null;
+                    }
+                    
+                    document.getElementById('btn-crear-sala').textContent = "Generar Enlace de Invitación";
+                    document.getElementById('btn-crear-sala').disabled = false;
+                    document.getElementById('link-container').classList.add('oculto');
+                    
+                    cambiarPantalla('menu-principal');
+                }
+            });
+
+            document.getElementById('btn-rendirse').addEventListener('click', function() {
+                if (modoJuego === 'p2p' && conn) {
+                    conn.send({ type: 'rendirse' });
+                }
+                mostrarToast("Te has rendido.");
+                playSound('end');
+            });
+
+            document.getElementById('btn-tablas').addEventListener('click', function() {
+                if (modoJuego === 'p2p' && conn) {
+                    conn.send({ type: 'tablas' });
+                    mostrarToast("Oferta de tablas enviada...");
+                } else {
+                    mostrarToast("La IA no acepta tablas.");
+                }
+            });
+
+            // --- AUTO-CONEXIÓN DESDE LA URL ---
+            const urlParams = new URLSearchParams(window.location.search);
+            const peerIdRival = urlParams.get('peer');
+
+            if (peerIdRival) {
+                try {
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                } catch (err) {
+                    console.warn("No se pudo limpiar la URL:", err);
+                }
+                
+                document.getElementById('nombre-rival').textContent = "Conectando...";
+                cambiarPantalla('contenedor-juego');
+                unirASala(peerIdRival);
+            } else {
+                cambiarPantalla('menu-principal');
+            }
+        });
+    </script>
+</body>
+</html>
